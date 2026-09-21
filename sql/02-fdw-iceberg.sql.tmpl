@@ -1,0 +1,53 @@
+-- Pattern 2: FDW-style access to Iceberg via pg_duckdb, joined with a
+-- native "hot" Postgres table. Run against database `lakedb`.
+-- (this file is a template -- run scripts/03-render-sql.sh to fill in
+-- __METADATA_LOCATION__ from the table scripts/01 just wrote)
+
+-- One-time per session: point DuckDB's S3 client at RustFS.
+SELECT duckdb.create_simple_secret(
+    type      := 'S3',
+    key_id    := '__RUSTFS_ACCESS_KEY__',
+    secret    := '__RUSTFS_SECRET_KEY__',
+    region    := 'us-east-1',
+    endpoint  := 'rustfs:9000',
+    url_style := 'path',
+    use_ssl   := 'false'
+);
+
+SELECT duckdb.install_extension('iceberg');
+
+-- The "cold" analytical data: an Iceberg table written by a batch job,
+-- read straight out of object storage. No ETL, no copy into Postgres.
+-- pg_duckdb table functions return a single composite row value, so
+-- columns are accessed with r['colname'] against the row alias.
+SELECT r['customer_id'] AS customer_id,
+       r['event_type']  AS event_type,
+       r['amount']      AS amount,
+       r['event_ts']    AS event_ts
+FROM iceberg_scan('__METADATA_LOCATION__') r
+ORDER BY r['event_ts'] DESC
+LIMIT 10;
+
+-- The "hot" operational data: an ordinary Postgres table.
+CREATE TABLE IF NOT EXISTS customers (
+    customer_id   bigint PRIMARY KEY,
+    customer_name text NOT NULL,
+    segment       text NOT NULL
+);
+
+INSERT INTO customers (customer_id, customer_name, segment)
+SELECT g, 'Customer ' || g, (ARRAY['enterprise', 'smb', 'startup'])[1 + (g % 3)]
+FROM generate_series(1000, 1050) AS g
+ON CONFLICT (customer_id) DO NOTHING;
+
+-- The payoff: one query joins hot Postgres data with cold Iceberg data.
+SELECT c.customer_name,
+       c.segment,
+       count(*)          AS events,
+       sum(e['amount'])  AS total_amount
+FROM iceberg_scan('__METADATA_LOCATION__') AS e
+JOIN customers c ON c.customer_id = e['customer_id']
+WHERE e['event_type'] = 'purchase'
+GROUP BY c.customer_name, c.segment
+ORDER BY total_amount DESC
+LIMIT 5;

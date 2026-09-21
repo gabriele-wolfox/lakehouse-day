@@ -1,0 +1,15 @@
+# Declarative extensions (same pattern as get-your-hands-dirty-with-cnpg's
+# slot 9): the operator runs CREATE EXTENSION for us instead of us doing it
+# by hand on stage.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: lakedb
+spec:
+  name: lakedb
+  owner: app
+  cluster:
+    name: pglake
+  extensions:
+    - name: vector
+    - name: pg_duckdb

@@ -1,0 +1,5 @@
+scratch/
+kubeconfig*
+*.swp
+scripts/.iceberg_metadata_location
+sql/02-fdw-iceberg.sql

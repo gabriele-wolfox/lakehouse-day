@@ -1,0 +1,24 @@
+# Single instance is enough for this lab. Uses a custom operand image
+# with pg_duckdb built in (see image/Dockerfile) and archives WAL/backups to
+# the same RustFS bucket the Iceberg table lives in.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pglake
+spec:
+  instances: 1
+  imageName: lakehouse-day/postgres-duckdb:17
+
+  postgresql:
+    shared_preload_libraries:
+      - pg_duckdb
+
+  storage:
+    size: 2Gi
+
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: rustfs-objectstore
+        serverName: pglake

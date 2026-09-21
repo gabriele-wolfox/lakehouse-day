@@ -1,0 +1,103 @@
+# RustFS: S3-compatible object storage shared by CNPG (WAL/backups) and the
+# Iceberg "lakehouse" table (bucket: lakehouse, prefixes: cnpg-backups/, warehouse/).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  labels:
+    app: rustfs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      securityContext:
+        fsGroup: 10001
+      initContainers:
+        - name: init-volumes
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data/rustfs0 /data/rustfs1 /data/rustfs2 /data/rustfs3 && chown -R 10001:10001 /data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:latest
+          ports:
+            - name: s3-api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          env:
+            # All 4 erasure-coded volumes live on the same PVC/physical disk
+            # here (single-node kind lab, not a real multi-disk deployment).
+            # RustFS FATALs at startup by default when it detects erasure
+            # endpoints sharing one physical device -- bypass that safety
+            # check for this local-testing setup.
+            - name: RUSTFS_UNSAFE_BYPASS_DISK_CHECK
+              value: "true"
+            - name: RUSTFS_VOLUMES
+              value: "/data/rustfs{0...3}"
+            - name: RUSTFS_ADDRESS
+              value: "0.0.0.0:9000"
+            - name: RUSTFS_CONSOLE_ADDRESS
+              value: "0.0.0.0:9001"
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: ACCESS_KEY_ID
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-credentials
+                  key: ACCESS_SECRET_KEY
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rustfs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+spec:
+  selector:
+    app: rustfs
+  ports:
+    - name: s3-api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
